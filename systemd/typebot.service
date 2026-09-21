@@ -1,0 +1,17 @@
+[Unit]
+Description=Typebot – Open-Source Chatbot-Builder (Docker Compose: Builder + Viewer + Postgres + Redis)
+Documentation=https://docs.typebot.io/self-hosting/get-started
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/typebot
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
