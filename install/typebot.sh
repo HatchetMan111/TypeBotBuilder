@@ -104,6 +104,10 @@ EOF
 on_error() {
   local exit_code="$1" lineno="$2" cmd="$3"
   set +x
+  # Sehr lange Befehle (z. B. Heredoc-Blöcke) kürzen – das Log enthält alles.
+  if ((${#cmd} > 2000)); then
+    cmd="${cmd:0:2000}… [gekürzt, vollständiger Befehl in $LOG_FILE]"
+  fi
   echo ""
   msg_error "════════════ INSTALLATION FEHLGESCHLAGEN ════════════"
   msg_error "Befehl    : $cmd"
@@ -428,7 +432,7 @@ services:
       - db-data:/var/lib/postgresql/data
     environment:
       - POSTGRES_DB=typebot
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_PASSWORD=\${POSTGRES_PASSWORD}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
