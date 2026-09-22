@@ -170,3 +170,41 @@ Container unter `/opt/typebot/` erzeugt.
   aus älteren Läufen beim Re-Run automatisch (DB-Passwort bleibt unangetastet).
 - Erster Start zieht ~2–3 GB Images — Web UI kann 2–4 Minuten brauchen
   (beide Ports werden bis zu 240 s gepollt).
+
+## 8. Anmeldung (Auth-Provider) – voll automatisierbar
+
+Ohne Provider zeigt der Builder: *„mindestens einen Authentifizierungsanbieter
+konfigurieren"*. Der Installer schreibt alles nach `/opt/typebot/.env` und
+startet den Stack neu — Nachtrag jederzeit idempotent per Re-Run:
+
+```bash
+# E-Mail-Login (Magic-Links) über eigenen SMTP-Server + Admin mit UNLIMITED-Plan:
+bash typebot.sh --ctid 100 \
+  --admin-email ich@domain.tld \
+  --smtp-host smtp.domain.tld --smtp-port 587 \
+  --smtp-user ich@domain.tld --smtp-pass '...' \
+  --smtp-from 'Typebot <noreply@domain.tld>'
+# Alternativ als ENV: ADMIN_EMAIL=.. SMTP_HOST=.. SMTP_PORT=.. SMTP_USER=..
+#   SMTP_PASS=.. SMTP_FROM=.. bash typebot.sh --ctid 100
+
+# Ohne eigene Zugangsdaten: lokales Postfix im LXC (Null-Konfig):
+bash typebot.sh --ctid 100 --smtp-local
+
+# OAuth statt E-Mail (braucht öffentlich erreichbare URL + App-Registrierung):
+bash typebot.sh --ctid 100 --github-id ID --github-secret SECRET
+bash typebot.sh --ctid 100 --google-id ID --google-secret SECRET
+```
+
+Hinweise:
+- Sonderzeichen in `--smtp-pass` sind ok; als ENV-Variable ist es zusätzlich
+  History-sicher (`SMTP_PASS='...'`).
+- `--smtp-secure` nur für Port 465 (implizites TLS); 587/25 bleiben Standard.
+- `--smtp-local` braucht keine Zugangsdaten, aber: Versand ab Heimnetz (Port 25,
+  dynamische IP, fehlender SPF) landet oft im Spam oder wird geblockt — für
+  reinen LAN-Test meist trotzdem brauchbar.
+- OAuth (GitHub/Google/…) verlangt i. d. R. eine öffentliche Domain mit HTTPS
+  (Callback: `$NEXTAUTH_URL/api/auth/callback/<anbieter>`) — über reine LAN-IP
+  funktioniert E-Mail-Login am zuverlässigsten.
+- Weitere Anbieter (GitLab, Azure AD, Keycloak, Custom-OAuth) per Hand in
+  `/opt/typebot/.env` ergänzen (Namen: `docs.typebot.io/self-hosting/configuration`),
+  danach `pct exec <CT> -- systemctl restart typebot`.

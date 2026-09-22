@@ -45,6 +45,23 @@ CORES_ARG="${CORES:-$DEFAULT_CORES}"
 RAM_ARG="${RAM:-$DEFAULT_RAM}"
 DISK_ARG="${DISK:-$DEFAULT_DISK}"
 
+# Auth-Provider (Typebot verlangt mind. einen, sonst Anmelde-Hinweis im Builder).
+# Alles optional – was gesetzt ist, landet in /opt/typebot/.env (idempotent).
+# SMTP-Weiteres: SMTP_HOST=user.mailhost, SMTP_PORT, SMTP_USER/ SMTP_PASS,
+# SMTP_FROM="Anzeigename <absender@domain>", SMTP_SECURE=true nur für Port 465.
+ADMIN_EMAIL_ARG="${ADMIN_EMAIL:-}"
+SMTP_HOST_ARG="${SMTP_HOST:-}"
+SMTP_PORT_ARG="${SMTP_PORT:-}"
+SMTP_USER_ARG="${SMTP_USER:-}"
+SMTP_PASS_ARG="${SMTP_PASS:-}"
+SMTP_FROM_ARG="${SMTP_FROM:-}"
+SMTP_SECURE_ARG="${SMTP_SECURE:-}"
+SMTP_LOCAL_ARG="${SMTP_LOCAL:-0}"             # 1 = lokales Postfix im LXC (ohne Zugangsdaten)
+GITHUB_ID_ARG="${GITHUB_ID:-}"
+GITHUB_SECRET_ARG="${GITHUB_SECRET:-}"
+GOOGLE_ID_ARG="${GOOGLE_ID:-}"
+GOOGLE_SECRET_ARG="${GOOGLE_SECRET:-}"
+
 DEBUG="${DEBUG:-0}"
 LOG_FILE="/tmp/${APP}-install-$(date +%F-%H%M%S).log"
 SCRIPT_ARGS="$*"
@@ -89,6 +106,19 @@ Optionen:
   --bridge NAME        Netzwerk-Bridge (Default: ${DEFAULT_BRIDGE})
   --password PW        Root-Passwort (Default: zufällig generiert, wird angezeigt)
   --ssh-key PATH       SSH Public Key in den Container übernehmen (optional)
+  --admin-email MAIL   Admin-Mail (erhält UNLIMITED-Plan bei Registrierung)
+  --smtp-host HOST     SMTP-Server für E-Mail-Login (Magic-Links)
+  --smtp-port PORT     SMTP-Port (Default: 25, 587 mit STARTTLS, 465 mit --smtp-secure)
+  --smtp-user USER     SMTP-Benutzer (darf Sonderzeichen enthalten)
+  --smtp-pass PASS     SMTP-Passwort (darf Sonderzeichen enthalten; lieber als ENV SMTP_PASS)
+  --smtp-from FROM     Absender, z. B. 'Typebot <noreply@domain.tld>'
+  --smtp-secure        SMTP mit implizitem TLS (nur für Port 465)
+  --smtp-local         stattdessen lokales Postfix im LXC installieren (keine
+                       Zugangsdaten nötig; Zustellung ab Heimnetz oft spam-/port-gefiltert)
+  --github-id ID       GitHub-OAuth Client-ID (+ --github-secret)
+  --github-secret S    GitHub-OAuth Secret (lieber als ENV GITHUB_SECRET)
+  --google-id ID       Google-OAuth Client-ID (+ --google-secret)
+  --google-secret S    Google-OAuth Secret (lieber als ENV GOOGLE_SECRET)
   --debug, -x          set -x + maximale Fehlermeldungskette
   --help, -h           diese Hilfe
 
@@ -161,6 +191,18 @@ TEMPLATE_STORE="$DEFAULT_TEMPLATE_STORE"
 BRIDGE="$DEFAULT_BRIDGE"
 ROOT_PASSWORD=""
 SSH_KEY=""
+ADMIN_EMAIL="$ADMIN_EMAIL_ARG"
+SMTP_HOST="$SMTP_HOST_ARG"
+SMTP_PORT="$SMTP_PORT_ARG"
+SMTP_USER="$SMTP_USER_ARG"
+SMTP_PASS="$SMTP_PASS_ARG"
+SMTP_FROM="$SMTP_FROM_ARG"
+SMTP_SECURE="$SMTP_SECURE_ARG"
+SMTP_LOCAL="$SMTP_LOCAL_ARG"
+GITHUB_ID="$GITHUB_ID_ARG"
+GITHUB_SECRET="$GITHUB_SECRET_ARG"
+GOOGLE_ID="$GOOGLE_ID_ARG"
+GOOGLE_SECRET="$GOOGLE_SECRET_ARG"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -174,6 +216,18 @@ while [[ $# -gt 0 ]]; do
     --bridge)          BRIDGE="${2:?}"; shift 2 ;;
     --password)        ROOT_PASSWORD="${2:?}"; shift 2 ;;
     --ssh-key)         SSH_KEY="${2:?}"; shift 2 ;;
+    --admin-email)     ADMIN_EMAIL="${2:?--admin-email braucht einen Wert}"; shift 2 ;;
+    --smtp-host)       SMTP_HOST="${2:?--smtp-host braucht einen Wert}"; shift 2 ;;
+    --smtp-port)       SMTP_PORT="${2:?--smtp-port braucht einen Wert}"; shift 2 ;;
+    --smtp-user)       SMTP_USER="${2:?--smtp-user braucht einen Wert}"; shift 2 ;;
+    --smtp-pass)       SMTP_PASS="${2:?--smtp-pass braucht einen Wert}"; shift 2 ;;
+    --smtp-from)       SMTP_FROM="${2:?--smtp-from braucht einen Wert}"; shift 2 ;;
+    --smtp-secure)     SMTP_SECURE="true"; shift ;;
+    --smtp-local)      SMTP_LOCAL="1"; shift ;;
+    --github-id)       GITHUB_ID="${2:?--github-id braucht einen Wert}"; shift 2 ;;
+    --github-secret)   GITHUB_SECRET="${2:?--github-secret braucht einen Wert}"; shift 2 ;;
+    --google-id)       GOOGLE_ID="${2:?--google-id braucht einen Wert}"; shift 2 ;;
+    --google-secret)   GOOGLE_SECRET="${2:?--google-secret braucht einen Wert}"; shift 2 ;;
     --debug|-x)        DEBUG="1"; set -x; shift ;;
     --help|-h)         usage; exit 0 ;;
     *) msg_error "Unbekannte Option: $1"; usage; exit 1 ;;
@@ -203,6 +257,19 @@ if [[ "$RAM" -lt 4096 ]]; then
 fi
 if [[ "$DISK" -lt 12 ]]; then
   msg_warn "DISK=${DISK} GB < 12 GB – Docker-Images + DB brauchen min. ~12 GB."
+fi
+if [[ -n "$SMTP_PORT" && ! "$SMTP_PORT" =~ ^[0-9]+$ ]]; then
+  msg_error "Ungültiger --smtp-port: $SMTP_PORT (nur Zahlen, z. B. 25, 587, 465)"
+  exit 1
+fi
+if [[ -n "$SMTP_SECURE" && "$SMTP_SECURE" != "true" && "$SMTP_SECURE" != "false" ]]; then
+  msg_error "Ungültiges SMTP_SECURE: $SMTP_SECURE (nur true/false)"
+  exit 1
+fi
+if [[ -z "$SMTP_HOST" && -z "$GITHUB_ID" && -z "$GOOGLE_ID" && "$SMTP_LOCAL" != "1" ]]; then
+  msg_warn "Kein Auth-Provider mitgegeben – Builder zeigt bis zur Konfiguration:"
+  msg_warn "  'mindestens einen Authentifizierungsanbieter konfigurieren'."
+  msg_warn "  Nachtragen per: bash typebot.sh --ctid <ID> --smtp-host ... (siehe --help)"
 fi
 msg_ok "Host-Checks bestanden."
 
@@ -357,6 +424,19 @@ BUILDER_IMAGE="${BUILDER_IMAGE}"
 VIEWER_IMAGE="${VIEWER_IMAGE}"
 POSTGRES_IMAGE="${POSTGRES_IMAGE}"
 REDIS_IMAGE="${REDIS_IMAGE}"
+# Auth-Provider-Optionen vom Host (Flags/ENV); leere Werte = nicht konfiguriert.
+ADMIN_EMAIL="${ADMIN_EMAIL}"
+SMTP_HOST="${SMTP_HOST}"
+SMTP_PORT="${SMTP_PORT}"
+SMTP_USER="${SMTP_USER}"
+SMTP_PASS="${SMTP_PASS}"
+SMTP_FROM="${SMTP_FROM}"
+SMTP_SECURE="${SMTP_SECURE}"
+SMTP_LOCAL="${SMTP_LOCAL}"
+GITHUB_ID="${GITHUB_ID}"
+GITHUB_SECRET="${GITHUB_SECRET}"
+GOOGLE_ID="${GOOGLE_ID}"
+GOOGLE_SECRET="${GOOGLE_SECRET}"
 
 echo "[LXC] apt update + Basis-Pakete ..."
 export DEBIAN_FRONTEND=noninteractive
@@ -419,10 +499,26 @@ echo "[LXC] Container-IP: \$LXC_IP"
 
 echo "[LXC] /opt/typebot vorbereiten (idempotent, Secrets bleiben erhalten) ..."
 mkdir -p /opt/typebot
+# Sicheres Einlesen (KEIN source: Zeichen wie $ oder ! in Passwoertern
+# wuerden sonst expandiert/ausgefuehrt). Liest KEY=VALUE literal, ohne Ausfuehrung.
+load_env_file() {
+  local line key val
+  while IFS= read -r line || [[ -n "\$line" ]]; do
+    [[ "\$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    key="\${line%%=*}"; val="\${line#*=}"
+    if (( \${#val} >= 2 )); then
+      if [[ "\${val:0:1}" == '"' && "\${val: -1}" == '"' ]]; then val="\${val:1:-1}"
+      elif [[ "\${val:0:1}" == "'" && "\${val: -1}" == "'" ]]; then val="\${val:1:-1}"
+      fi
+    fi
+    # Host-Flags/ENV gewinnen: nur setzen, wenn noch leer (nicht gesetzte
+    # Host-Optionen sind "" und werden so aus der gespeicherten .env gefuellt).
+    if [[ -z "\${!key:-}" ]]; then printf -v "\$key" '%s' "\$val"; fi
+  done < "\$1"
+}
 if [[ -f /opt/typebot/.env ]]; then
-  # shellcheck disable=SC1091
-  source /opt/typebot/.env || true
-  echo "[LXC] Bestehende .env gefunden – Secrets werden wiederverwendet."
+  load_env_file /opt/typebot/.env
+  echo "[LXC] Bestehende .env gefunden – Secrets/Provider werden wiederverwendet."
 fi
 # Secrets mit GARANTIERTER Laenge: 'openssl rand -hex N' liefert exakt 2*N
 # Zeichen, ganz ohne Filter-Pipe. (Die naive Variante 'rand -base64 N |
@@ -441,10 +537,30 @@ if [[ -z "\${POSTGRES_PASSWORD:-}" ]]; then
   POSTGRES_PASSWORD="\$(openssl rand -hex 12)"
   echo "[LXC] Neues POSTGRES_PASSWORD generiert (\${#POSTGRES_PASSWORD} Zeichen)."
 fi
+
+# Optional: lokales Postfix als SMTP-Relay (keine Zugangsdaten noetig).
+# Explizit mitgegebene SMTP_*-Werte gewinnen immer gegen diese Defaults.
+if [[ "\$SMTP_LOCAL" == "1" ]]; then
+  echo "[LXC] Installiere lokales Postfix (SMTP auf 127.0.0.1:25) ..."
+  apt-get install -y --no-install-recommends postfix
+  echo "typebot.local" > /etc/mailname
+  postconf -e "myhostname = typebot.local" "inet_protocols = ipv4" \
+    "mydestination = \$myhostname, localhost" \
+    "mynetworks = 127.0.0.0/8" "smtp_tls_security_level = may" \
+    "inet_interfaces = loopback-only"
+  systemctl enable postfix
+  systemctl restart postfix
+  [[ -z "\$SMTP_HOST" ]] && SMTP_HOST="127.0.0.1"
+  [[ -z "\$SMTP_PORT" ]] && SMTP_PORT="25"
+  [[ -z "\$SMTP_FROM" ]] && SMTP_FROM="Typebot <typebot@typebot.local>"
+  echo "[LXC] Postfix-Status: \$(systemctl is-active postfix)"
+fi
 # URLs zeigen IMMER auf die aktuelle Container-IP (DHCP-Wechsel-safe)
 NEXTAUTH_URL="http://\$LXC_IP:\$BUILDER_PORT"
 NEXT_PUBLIC_VIEWER_URL="http://\$LXC_IP:\$VIEWER_PORT"
 DATABASE_URL="postgresql://postgres:\$POSTGRES_PASSWORD@typebot-db:5432/typebot"
+# Unquoted heredoc: Container-Vars expandieren hier (Werte werden NICHT
+# re-expandiert, Sonderzeichen in Passwoertern sind also sicher).
 cat > /opt/typebot/.env <<ENV_EOF
 ENCRYPTION_SECRET=\$ENCRYPTION_SECRET
 POSTGRES_PASSWORD=\$POSTGRES_PASSWORD
@@ -453,6 +569,19 @@ NEXTAUTH_URL=\$NEXTAUTH_URL
 NEXT_PUBLIC_VIEWER_URL=\$NEXT_PUBLIC_VIEWER_URL
 NODE_OPTIONS=--no-node-snapshot
 ENV_EOF
+# Optionale Werte NUR wenn nicht leer (leere Strings brechen min(1)-Checks).
+maybe_env() { if [[ -n "\$2" ]]; then printf '%s=%s\n' "\$1" "\$2" >> /opt/typebot/.env; fi; }
+maybe_env ADMIN_EMAIL "\$ADMIN_EMAIL"
+maybe_env SMTP_HOST "\$SMTP_HOST"
+maybe_env SMTP_PORT "\$SMTP_PORT"
+maybe_env SMTP_USERNAME "\$SMTP_USER"
+maybe_env SMTP_PASSWORD "\$SMTP_PASS"
+maybe_env NEXT_PUBLIC_SMTP_FROM "\$SMTP_FROM"
+maybe_env SMTP_SECURE "\$SMTP_SECURE"
+maybe_env GITHUB_CLIENT_ID "\$GITHUB_ID"
+maybe_env GITHUB_CLIENT_SECRET "\$GITHUB_SECRET"
+maybe_env GOOGLE_AUTH_CLIENT_ID "\$GOOGLE_ID"
+maybe_env GOOGLE_AUTH_CLIENT_SECRET "\$GOOGLE_SECRET"
 chmod 0600 /opt/typebot/.env
 echo "[LXC] .env geschrieben (NEXTAUTH_URL=\$NEXTAUTH_URL)."
 
@@ -596,6 +725,16 @@ if ! wait_for_http "Viewer" "http://127.0.0.1:\$VIEWER_PORT/__ENV.js"; then
 fi
 echo "[LXC] Service aktiv: \$(systemctl is-active typebot)"
 echo "[LXC] Container: \$(docker ps --format '{{.Names}} {{.Status}}' | tr '\\n' '; ')"
+# Typebot verlangt mind. einen Auth-Provider, sonst Hinweis im Builder.
+# (Prueft auch GitLab/Facebook/Azure/Keycloak/Custom aus manueller .env.)
+if [[ -z "\${SMTP_HOST:-}" && -z "\${GITHUB_CLIENT_ID:-}" && -z "\${GOOGLE_AUTH_CLIENT_ID:-}" && -z "\${GITLAB_CLIENT_ID:-}" && -z "\${FACEBOOK_CLIENT_ID:-}" && -z "\${AZURE_AD_CLIENT_ID:-}" && -z "\${KEYCLOAK_CLIENT_ID:-}" && -z "\${CUSTOM_OAUTH_CLIENT_ID:-}" ]]; then
+  echo "[LXC][WARN] Kein Auth-Provider konfiguriert – Builder meldet: 'mindestens einen Authentifizierungsanbieter konfigurieren'." >&2
+  echo "[LXC][WARN] Nachtragen (idempotent, Container bleibt): Installer auf dem HOST erneut laufen lassen, z. B.:" >&2
+  echo "[LXC][WARN]   bash typebot.sh --ctid <ID> --admin-email ich@domain.tld --smtp-host smtp.domain.tld --smtp-port 587 --smtp-user ich@domain.tld --smtp-pass '...' --smtp-from 'Typebot <noreply@domain.tld>'" >&2
+  echo "[LXC][WARN] oder ohne Zugangsdaten:  bash typebot.sh --ctid <ID> --smtp-local   (lokales Postfix, Zustellung ab Heimnetz evtl. spam-gefiltert)" >&2
+else
+  echo "[LXC] Auth-Provider konfiguriert."
+fi
 SETUP_EOF
 
 chmod 0644 "$TMP_SETUP"
@@ -638,6 +777,11 @@ if [[ "$VIEWER_CODE" == "000" ]]; then
 fi
 msg_ok "Viewer antwortet (HTTP $VIEWER_CODE auf localhost:${VIEWER_PORT}/__ENV.js)."
 
+AUTH_DESC="keiner – Builder zeigt Auth-Hinweis (Nachtrag: README Kap. Auth)"
+if pct exec "$CTID" -- grep -Eq '^(SMTP_HOST|GITHUB_CLIENT_ID|GOOGLE_AUTH_CLIENT_ID|GITLAB_CLIENT_ID|FACEBOOK_CLIENT_ID|AZURE_AD_CLIENT_ID|KEYCLOAK_CLIENT_ID|CUSTOM_OAUTH_CLIENT_ID)=.+' /opt/typebot/.env 2>/dev/null; then
+  AUTH_DESC="konfiguriert (E-Mail und/oder OAuth – Details im Container: grep -E 'HOST|CLIENT_ID' /opt/typebot/.env)"
+fi
+
 CT_IP="$(pct exec "$CTID" -- ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
 [[ -z "$CT_IP" ]] && CT_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
 
@@ -653,6 +797,7 @@ else
 echo -e "  Builder      : ${C_BOLD}http://<LXC-IP>:${BUILDER_PORT}${C_RESET} (IP konnte nicht auto-ermittelt werden: pct exec $CTID -- ip a)"
 echo -e "  Viewer       : ${C_BOLD}http://<LXC-IP>:${VIEWER_PORT}${C_RESET}"
 fi
+echo -e "  Auth-Provider: ${AUTH_DESC}"
 if [[ "$CREATED_NOW" == "1" && "$GENERATED_PW" == "1" ]]; then
 echo -e "  Root-Passwort: ${C_BOLD}${ROOT_PASSWORD}${C_RESET} (nur jetzt angezeigt – sicher ablegen!)"
 fi
