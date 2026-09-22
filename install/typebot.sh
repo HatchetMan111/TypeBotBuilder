@@ -573,7 +573,7 @@ if [[ "\$USE_LOCAL_SMTP" == "1" ]]; then
   # inet_interfaces=all: Der Builder laeuft im Docker-Netz (Bridge), loopback-only
   # wuerde ihn aussperren. Relay bleibt trotzdem lokal (mynetworks unten).
   postconf -e "myhostname = typebot.local" "inet_protocols = ipv4" \
-    "mydestination = \$myhostname, localhost, typebot.local" \
+    "mydestination = \\\$myhostname, localhost, typebot.local" \
     "mynetworks = 127.0.0.0/8 172.16.0.0/12" \
     "inet_interfaces = all"
   systemctl enable postfix
