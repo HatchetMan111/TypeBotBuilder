@@ -365,14 +365,39 @@ apt-get update
 apt-get install -y --no-install-recommends curl ca-certificates openssl iproute2 procps
 
 echo "[LXC] Docker sicherstellen (idempotent) ..."
-if ! command -v docker >/dev/null 2>&1; then
-  apt-get install -y --no-install-recommends docker.io docker-compose-plugin
-  systemctl enable docker
-  systemctl start docker
-else
-  echo "[LXC] Docker bereits vorhanden: \$(docker --version)"
-  if ! docker compose version >/dev/null 2>&1; then
-    apt-get install -y --no-install-recommends docker-compose-plugin
+DOCKER_OK=0
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+  echo "[LXC] Docker + Compose bereits vorhanden: \$(docker --version) / \$(docker compose version --short)"
+  DOCKER_OK=1
+fi
+if [[ "\$DOCKER_OK" != "1" ]]; then
+  # Debian-Bookworm-Repos enthalten KEIN docker-compose-plugin (nur docker.io).
+  # Darum: offizielles Docker-Repo (docker-ce + Compose v2); Fallback docker.io + Plugin-Binary.
+  echo "[LXC] Installiere Docker aus dem offiziellen Docker-Repo ..."
+  apt-get install -y --no-install-recommends gnupg
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL --retry 3 --max-time 60 https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+  DARCH="\$(dpkg --print-architecture)"
+  DCODENAME="\$(. /etc/os-release && echo "\$VERSION_CODENAME")"
+  echo "deb [arch=\$DARCH signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \$DCODENAME stable" > /etc/apt/sources.list.d/docker.list
+  apt-get update
+  if apt-get install -y --no-install-recommends docker-ce docker-ce-cli containerd.io docker-compose-plugin; then
+    echo "[LXC] Docker aus offiziellem Repo installiert."
+  else
+    echo "[LXC][WARN] Offizielles Docker-Repo fehlgeschlagen – Fallback: docker.io + Compose-Plugin-Binary von GitHub."
+    rm -f /etc/apt/sources.list.d/docker.list
+    apt-get update
+    apt-get install -y --no-install-recommends docker.io
+    CMACHINE="\$(uname -m)"
+    case "\$CMACHINE" in
+      x86_64) CMARCH="x86_64" ;;
+      aarch64|arm64) CMARCH="aarch64" ;;
+      *) echo "[LXC][ERROR] Nicht unterstützte Architektur für Compose-Fallback: \$CMACHINE" >&2; exit 1 ;;
+    esac
+    mkdir -p /usr/libexec/docker/cli-plugins
+    curl -fSL --retry 3 --max-time 180 -o /usr/libexec/docker/cli-plugins/docker-compose "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-\$CMARCH"
+    chmod +x /usr/libexec/docker/cli-plugins/docker-compose
   fi
   systemctl enable docker >/dev/null 2>&1 || true
   systemctl start docker >/dev/null 2>&1 || true
