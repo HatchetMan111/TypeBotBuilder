@@ -275,7 +275,7 @@ if pct status "$CTID" >/dev/null 2>&1; then
   msg_info "Bestehender Hostname: ${EXISTING_HOST:-unbekannt}"
 else
   if [[ -z "$ROOT_PASSWORD" ]]; then
-    ROOT_PASSWORD="$(openssl rand -base64 12 | tr -dc 'a-zA-Z0-9' | head -c 16)"
+    ROOT_PASSWORD="$(openssl rand -hex 8)"
     GENERATED_PW=1
   fi
   msg_info "Erstelle LXC $CTID (hostname=${HOSTNAME_FINAL}, cores=${CORES}, ram=${RAM}MB, disk=${DISK}G) ..."
@@ -424,13 +424,22 @@ if [[ -f /opt/typebot/.env ]]; then
   source /opt/typebot/.env || true
   echo "[LXC] Bestehende .env gefunden – Secrets werden wiederverwendet."
 fi
-if [[ -z "\${ENCRYPTION_SECRET:-}" ]]; then
-  ENCRYPTION_SECRET="\$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9' | head -c 32)"
-  echo "[LXC] Neuer ENCRYPTION_SECRET generiert."
+# Secrets mit GARANTIERTER Laenge: 'openssl rand -hex N' liefert exakt 2*N
+# Zeichen, ganz ohne Filter-Pipe. (Die naive Variante 'rand -base64 N |
+# tr -dc ... | head -c N' ist KAPUTT: tr entfernt +/=, head fuellt NICHT auf
+# -> Secret meist zu kurz. Typebot validiert ENCRYPTION_SECRET >= 32 Zeichen
+# im Instrumentation-Hook und wirft sonst auf JEDE Route HTTP 500.)
+if [[ -z "\${ENCRYPTION_SECRET:-}" ]] || (( \${#ENCRYPTION_SECRET} < 32 )); then
+  [[ -n "\${ENCRYPTION_SECRET:-}" ]] && echo "[LXC][WARN] ENCRYPTION_SECRET zu kurz (\${#ENCRYPTION_SECRET} statt >=32 Zeichen) – wird neu generiert (sonst dauerhaft HTTP 500)."
+  ENCRYPTION_SECRET="\$(openssl rand -hex 16)"
+  echo "[LXC] Neuer ENCRYPTION_SECRET generiert (\${#ENCRYPTION_SECRET} Zeichen)."
 fi
+(( \${#ENCRYPTION_SECRET} >= 32 )) || { echo "[LXC][ERROR] ENCRYPTION_SECRET-Generierung fehlgeschlagen." >&2; exit 1; }
+# POSTGRES_PASSWORD NUR beim Erst-Setup erzeugen – spaeter aendern wuerde die
+# DB-Auth brechen (Volume mit initialisiertem Passwort bleibt erhalten).
 if [[ -z "\${POSTGRES_PASSWORD:-}" ]]; then
-  POSTGRES_PASSWORD="\$(openssl rand -base64 18 | tr -dc 'a-zA-Z0-9' | head -c 24)"
-  echo "[LXC] Neues POSTGRES_PASSWORD generiert."
+  POSTGRES_PASSWORD="\$(openssl rand -hex 12)"
+  echo "[LXC] Neues POSTGRES_PASSWORD generiert (\${#POSTGRES_PASSWORD} Zeichen)."
 fi
 # URLs zeigen IMMER auf die aktuelle Container-IP (DHCP-Wechsel-safe)
 NEXTAUTH_URL="http://\$LXC_IP:\$BUILDER_PORT"

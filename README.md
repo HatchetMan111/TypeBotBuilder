@@ -164,5 +164,9 @@ Container unter `/opt/typebot/` erzeugt.
   (der Viewer kennt nur Bot-Routen) — das ist kein Fehler. Health-Probe ist
   `http://<LXC-IP>:8081/__ENV.js` (statische Datei, 200). Im Browser ist der
   Viewer über konkrete Bot-URLs erreichbar, der Builder über `/` auf `:8080`.
+- **Builder-HTTP-500?** Typebot validiert `ENCRYPTION_SECRET` (>= 32 Zeichen)
+  beim Start und wirft sonst auf jede Route 500. Der Installer erzeugt
+  garantiert 32 Zeichen (`openssl rand -hex 16`) und heilt zu kurze Secrets
+  aus älteren Läufen beim Re-Run automatisch (DB-Passwort bleibt unangetastet).
 - Erster Start zieht ~2–3 GB Images — Web UI kann 2–4 Minuten brauchen
   (beide Ports werden bis zu 240 s gepollt).
