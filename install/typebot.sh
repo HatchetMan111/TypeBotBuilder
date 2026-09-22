@@ -549,35 +549,41 @@ sleep 10
 docker compose up -d
 sleep 5
 
+# HTTP-Probe: JEDE HTTP-Antwort (auch 404) zaehlt als "antwortet" – nur 000
+# (keine TCP-Verbindung) ist ein Fehler. Grund: Der Viewer hat keine 200er-
+# Root-Route ('/' -> 404), ist aber gesund; sein statisches /__ENV.js gibt 200.
+wait_for_http() {
+  local label="\$1" url="\$2"
+  local i code
+  for i in \$(seq 1 120); do
+    code="\$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "\$url" 2>/dev/null || echo "000")"
+    if [[ "\$code" != "000" ]]; then
+      echo "[LXC] \$label antwortet (HTTP \$code auf \$url)."
+      return 0
+    fi
+    if [[ \$((i % 12)) -eq 0 ]]; then echo "[LXC] ... warte auf \$label (\$((i*2))s), docker ps:"; docker ps --format '{{.Names}} {{.Status}}' || true; fi
+    sleep 2
+  done
+  echo "[LXC][ERROR] \$label antwortet nicht auf \$url (keine TCP/HTTP-Antwort)." >&2
+  return 1
+}
+
 echo "[LXC] Warte auf Builder (http://127.0.0.1:\$BUILDER_PORT, max 240s) ..."
-OK_BUILDER=0
-for i in \$(seq 1 120); do
-  if curl -fsS --max-time 5 "http://127.0.0.1:\$BUILDER_PORT" >/dev/null 2>&1; then OK_BUILDER=1; break; fi
-  if [[ \$((i % 12)) -eq 0 ]]; then echo "[LXC] ... warte auf Builder (\${i}x2s), docker ps:"; docker ps --format '{{.Names}} {{.Status}}' || true; fi
-  sleep 2
-done
-if [[ "\$OK_BUILDER" != "1" ]]; then
-  echo "[LXC][ERROR] Builder antwortet nicht auf 127.0.0.1:\$BUILDER_PORT" >&2
+if ! wait_for_http "Builder" "http://127.0.0.1:\$BUILDER_PORT"; then
+  echo "[LXC][ERROR] Builder-Diagnose:" >&2
   systemctl status typebot --no-pager --full >&2 || true
   journalctl -u typebot --no-pager -n 100 >&2 || true
   docker ps -a >&2 || true
   docker compose logs --tail=100 --no-color >&2 || true
   exit 1
 fi
-echo "[LXC] Builder antwortet."
 
-echo "[LXC] Warte auf Viewer (http://127.0.0.1:\$VIEWER_PORT, max 240s) ..."
-OK_VIEWER=0
-for i in \$(seq 1 120); do
-  if curl -fsS --max-time 5 "http://127.0.0.1:\$VIEWER_PORT" >/dev/null 2>&1; then OK_VIEWER=1; break; fi
-  sleep 2
-done
-if [[ "\$OK_VIEWER" != "1" ]]; then
-  echo "[LXC][ERROR] Viewer antwortet nicht auf 127.0.0.1:\$VIEWER_PORT" >&2
+echo "[LXC] Warte auf Viewer (http://127.0.0.1:\$VIEWER_PORT/__ENV.js, max 240s) ..."
+if ! wait_for_http "Viewer" "http://127.0.0.1:\$VIEWER_PORT/__ENV.js"; then
+  echo "[LXC][ERROR] Viewer-Diagnose:" >&2
   docker compose logs --tail=100 --no-color >&2 || true
   exit 1
 fi
-echo "[LXC] Viewer antwortet."
 echo "[LXC] Service aktiv: \$(systemctl is-active typebot)"
 echo "[LXC] Container: \$(docker ps --format '{{.Names}} {{.Status}}' | tr '\\n' '; ')"
 SETUP_EOF
@@ -603,19 +609,22 @@ if [[ "$SERVICE_STATE" != "active" ]]; then
 fi
 msg_ok "Service läuft (systemctl is-active $APP = active)."
 
-if ! pct exec "$CTID" -- curl -fsS --max-time 10 "http://127.0.0.1:${BUILDER_PORT}" >/dev/null; then
-  msg_error "HTTP-Check fehlgeschlagen: Builder http://127.0.0.1:${BUILDER_PORT} antwortet nicht."
+# HTTP-Code statt -f: JEDE Antwort (auch Viewer-404 auf '/') zaehlt als "lebt".
+BUILDER_CODE="$(pct exec "$CTID" -- curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://127.0.0.1:${BUILDER_PORT}" 2>/dev/null || echo "000")"
+if [[ "$BUILDER_CODE" == "000" ]]; then
+  msg_error "HTTP-Check fehlgeschlagen: Builder http://127.0.0.1:${BUILDER_PORT} antwortet nicht (keine Verbindung)."
   pct exec "$CTID" -- docker compose -f /opt/typebot/docker-compose.yml logs --tail=100 --no-color || true
   exit 1
 fi
-msg_ok "Builder antwortet (HTTP-Check auf localhost:${BUILDER_PORT})."
+msg_ok "Builder antwortet (HTTP $BUILDER_CODE auf localhost:${BUILDER_PORT})."
 
-if ! pct exec "$CTID" -- curl -fsS --max-time 10 "http://127.0.0.1:${VIEWER_PORT}" >/dev/null; then
-  msg_error "HTTP-Check fehlgeschlagen: Viewer http://127.0.0.1:${VIEWER_PORT} antwortet nicht."
+VIEWER_CODE="$(pct exec "$CTID" -- curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://127.0.0.1:${VIEWER_PORT}/__ENV.js" 2>/dev/null || echo "000")"
+if [[ "$VIEWER_CODE" == "000" ]]; then
+  msg_error "HTTP-Check fehlgeschlagen: Viewer http://127.0.0.1:${VIEWER_PORT}/__ENV.js antwortet nicht (keine Verbindung)."
   pct exec "$CTID" -- docker compose -f /opt/typebot/docker-compose.yml logs --tail=100 --no-color || true
   exit 1
 fi
-msg_ok "Viewer antwortet (HTTP-Check auf localhost:${VIEWER_PORT})."
+msg_ok "Viewer antwortet (HTTP $VIEWER_CODE auf localhost:${VIEWER_PORT}/__ENV.js)."
 
 CT_IP="$(pct exec "$CTID" -- ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)"
 [[ -z "$CT_IP" ]] && CT_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
@@ -639,7 +648,7 @@ echo -e "  Service      : systemctl status ${APP}  (im Container via: pct enter 
 echo -e "  Stack        : cd /opt/typebot && docker compose ps / docker compose logs -f (im Container)"
 echo -e "  Update       : Skript erneut laufen lassen (idempotent, zieht neueste Images + restart)"
 echo -e "  Deinstall    : pct stop ${CTID} && pct destroy ${CTID}"
-echo -e "  Reboot-Test  : pct reboot ${CTID} && sleep 60 && curl -fs http://${CT_IP:-<LXC-IP>}:${BUILDER_PORT} >/dev/null && curl -fs http://${CT_IP:-<LXC-IP>}:${VIEWER_PORT} >/dev/null"
+echo -e "  Reboot-Test  : pct reboot ${CTID} && sleep 60 && curl -fs http://${CT_IP:-<LXC-IP>}:${BUILDER_PORT} >/dev/null && curl -fs http://${CT_IP:-<LXC-IP>}:${VIEWER_PORT}/__ENV.js >/dev/null"
 echo -e "  Log          : ${LOG_FILE}"
 echo -e "  Setup-Kopie  : ${TMP_SETUP}"
 if [[ "$DEBUG" != "1" ]]; then

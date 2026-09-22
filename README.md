@@ -48,14 +48,14 @@ Das Skript (`set -euo pipefail`, idempotent):
    (`docker-compose.yml` + `.env` mit zufälligem `ENCRYPTION_SECRET` /
    `POSTGRES_PASSWORD`) an, schreibt die systemd-Unit, `systemctl enable --now typebot`,
 4. verifiziert `systemctl is-active typebot` + HTTP auf `127.0.0.1:8080` und
-   `127.0.0.1:8081` und gibt beide finalen URLs + Container-IP aus.
+   `127.0.0.1:8081/__ENV.js` und gibt beide finalen URLs + Container-IP aus.
 
 Erwartete Schlussausgabe (Beispiel):
 
 ```text
 [OK]    Service läuft (systemctl is-active typebot = active).
-[OK]    Builder antwortet (HTTP-Check auf localhost:8080).
-[OK]    Viewer antwortet (HTTP-Check auf localhost:8081).
+[OK]    Builder antwortet (HTTP 200 auf localhost:8080).
+[OK]    Viewer antwortet (HTTP 200 auf localhost:8081/__ENV.js).
 
 ════════════════ INSTALLATION ERFOLGREICH ════════════════
   App          : Typebot – Open-Source Chatbot-Builder
@@ -68,7 +68,7 @@ Erwartete Schlussausgabe (Beispiel):
   Stack        : cd /opt/typebot && docker compose ps / docker compose logs -f (im Container)
   Update       : Skript erneut laufen lassen (idempotent, zieht neueste Images + restart)
   Deinstall    : pct stop 100 && pct destroy 100
-  Reboot-Test  : pct reboot 100 && sleep 60 && curl -fs http://192.168.1.100:8080 >/dev/null && curl -fs http://192.168.1.100:8081 >/dev/null
+  Reboot-Test  : pct reboot 100 && sleep 60 && curl -fs http://192.168.1.100:8080 >/dev/null && curl -fs http://192.168.1.100:8081/__ENV.js >/dev/null
   Log          : /tmp/typebot-install-2026-....log
 ══════════════════════════════════════════════════════════
 ```
@@ -82,7 +82,8 @@ sleep 60   # Erster Start nach Reboot: Docker + 4 Dienste brauchen ~30–60 s
 pct exec $CT -- systemctl is-active typebot   # muss: active
 pct exec $CT -- docker ps --format '{{.Names}} {{.Status}}'
 curl -fs http://$(pct exec $CT -- ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1):8080 >/dev/null && echo BUILDER-OK
-curl -fs http://$(pct exec $CT -- ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1):8081 >/dev/null && echo VIEWER-OK
+# Viewer: KEIN curl auf '/' (gibt by design 404) – stattdessen /__ENV.js:
+curl -fs http://$(pct exec $CT -- ip -4 -o addr show eth0 | awk '{print $4}' | cut -d/ -f1):8081/__ENV.js >/dev/null && echo VIEWER-OK
 pct config $CT | grep -i onboot              # muss: onboot: 1
 ```
 
@@ -102,7 +103,7 @@ pct enter 100
 cd /opt/typebot && docker compose pull && docker compose up -d
 systemctl restart typebot && systemctl status typebot --no-pager --full
 curl -fs http://127.0.0.1:8080 >/dev/null && echo BUILDER-OK
-curl -fs http://127.0.0.1:8081 >/dev/null && echo VIEWER-OK
+curl -fs http://127.0.0.1:8081/__ENV.js >/dev/null && echo VIEWER-OK   # '/' gibt 404 by design
 ```
 
 ## 4. Deinstallation
@@ -159,5 +160,9 @@ Container unter `/opt/typebot/` erzeugt.
   er erkennt die neue IP und schreibt `NEXTAUTH_URL`/`NEXT_PUBLIC_VIEWER_URL`
   in `/opt/typebot/.env` neu (Secrets bleiben). Für stabile URLs DHCP-Reservierung
   oder statische IP einrichten.
+- **Viewer-Health-Check:** `http://<LXC-IP>:8081/` gibt **by design 404**
+  (der Viewer kennt nur Bot-Routen) — das ist kein Fehler. Health-Probe ist
+  `http://<LXC-IP>:8081/__ENV.js` (statische Datei, 200). Im Browser ist der
+  Viewer über konkrete Bot-URLs erreichbar, der Builder über `/` auf `:8080`.
 - Erster Start zieht ~2–3 GB Images — Web UI kann 2–4 Minuten brauchen
   (beide Ports werden bis zu 240 s gepollt).
