@@ -556,7 +556,8 @@ wait_for_http() {
   local label="\$1" url="\$2"
   local i code
   for i in \$(seq 1 120); do
-    code="\$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "\$url" 2>/dev/null || echo "000")"
+    code="\$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "\$url" 2>/dev/null || true)"
+    [[ -z "\$code" ]] && code="000"
     if [[ "\$code" != "000" ]]; then
       echo "[LXC] \$label antwortet (HTTP \$code auf \$url)."
       return 0
@@ -610,7 +611,8 @@ fi
 msg_ok "Service läuft (systemctl is-active $APP = active)."
 
 # HTTP-Code statt -f: JEDE Antwort (auch Viewer-404 auf '/') zaehlt als "lebt".
-BUILDER_CODE="$(pct exec "$CTID" -- curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://127.0.0.1:${BUILDER_PORT}" 2>/dev/null || echo "000")"
+BUILDER_CODE="$(pct exec "$CTID" -- curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://127.0.0.1:${BUILDER_PORT}" 2>/dev/null || true)"
+[[ -z "$BUILDER_CODE" ]] && BUILDER_CODE="000"
 if [[ "$BUILDER_CODE" == "000" ]]; then
   msg_error "HTTP-Check fehlgeschlagen: Builder http://127.0.0.1:${BUILDER_PORT} antwortet nicht (keine Verbindung)."
   pct exec "$CTID" -- docker compose -f /opt/typebot/docker-compose.yml logs --tail=100 --no-color || true
@@ -618,7 +620,8 @@ if [[ "$BUILDER_CODE" == "000" ]]; then
 fi
 msg_ok "Builder antwortet (HTTP $BUILDER_CODE auf localhost:${BUILDER_PORT})."
 
-VIEWER_CODE="$(pct exec "$CTID" -- curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://127.0.0.1:${VIEWER_PORT}/__ENV.js" 2>/dev/null || echo "000")"
+VIEWER_CODE="$(pct exec "$CTID" -- curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://127.0.0.1:${VIEWER_PORT}/__ENV.js" 2>/dev/null || true)"
+[[ -z "$VIEWER_CODE" ]] && VIEWER_CODE="000"
 if [[ "$VIEWER_CODE" == "000" ]]; then
   msg_error "HTTP-Check fehlgeschlagen: Viewer http://127.0.0.1:${VIEWER_PORT}/__ENV.js antwortet nicht (keine Verbindung)."
   pct exec "$CTID" -- docker compose -f /opt/typebot/docker-compose.yml logs --tail=100 --no-color || true
