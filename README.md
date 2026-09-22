@@ -171,14 +171,28 @@ Container unter `/opt/typebot/` erzeugt.
 - Erster Start zieht ~2–3 GB Images — Web UI kann 2–4 Minuten brauchen
   (beide Ports werden bis zu 240 s gepollt).
 
-## 8. Anmeldung (Auth-Provider) – voll automatisierbar
+## 8. Anmeldung – nichts konfigurieren, sofort nutzen
 
-Ohne Provider zeigt der Builder: *„mindestens einen Authentifizierungsanbieter
-konfigurieren"*. Der Installer schreibt alles nach `/opt/typebot/.env` und
-startet den Stack neu — Nachtrag jederzeit idempotent per Re-Run:
+**Default (keine Flags nötig):** Der Installer richtet lokales Postfix ein,
+löst den E-Mail-Login für `typebot@typebot.local` selbst aus und druckt
+einen **6-stelligen Code + Direkt-Link** (10 Min gültig) — im Builder
+eintippen/anklicken, drin. Die Adresse bekommt automatisch den
+UNLIMITED-Plan. Erwartete Ausgabe:
+
+```text
+[LXC] ═══════ LOGIN (Code 10 Minuten gueltig) ═══════
+[LXC] E-Mail : typebot@typebot.local
+[LXC] Code   : 482913   (im Builder unter Sign-in eintippen)
+[LXC] Direkt : http://192.168.178.105:8080/api/auth/callback/nodemailer?token=...
+```
+
+Anpassen / Alternativen (jederzeit idempotent per Re-Run):
 
 ```bash
-# E-Mail-Login (Magic-Links) über eigenen SMTP-Server + Admin mit UNLIMITED-Plan:
+# Eigene Login-Adresse für den Auto-Code:
+bash typebot.sh --ctid 100 --login-email ich@typebot.local
+
+# E-Mail-Login über eigenen SMTP-Server (beste Zustellung):
 bash typebot.sh --ctid 100 \
   --admin-email ich@domain.tld \
   --smtp-host smtp.domain.tld --smtp-port 587 \
@@ -187,8 +201,8 @@ bash typebot.sh --ctid 100 \
 # Alternativ als ENV: ADMIN_EMAIL=.. SMTP_HOST=.. SMTP_PORT=.. SMTP_USER=..
 #   SMTP_PASS=.. SMTP_FROM=.. bash typebot.sh --ctid 100
 
-# Ohne eigene Zugangsdaten: lokales Postfix im LXC (Null-Konfig):
-bash typebot.sh --ctid 100 --smtp-local
+# Auto-Login ganz abschalten:
+bash typebot.sh --ctid 100 --no-auto-login
 
 # OAuth statt E-Mail (braucht öffentlich erreichbare URL + App-Registrierung):
 bash typebot.sh --ctid 100 --github-id ID --github-secret SECRET
@@ -199,9 +213,9 @@ Hinweise:
 - Sonderzeichen in `--smtp-pass` sind ok; als ENV-Variable ist es zusätzlich
   History-sicher (`SMTP_PASS='...'`).
 - `--smtp-secure` nur für Port 465 (implizites TLS); 587/25 bleiben Standard.
-- `--smtp-local` braucht keine Zugangsdaten, aber: Versand ab Heimnetz (Port 25,
-  dynamische IP, fehlender SPF) landet oft im Spam oder wird geblockt — für
-  reinen LAN-Test meist trotzdem brauchbar.
+- Lokales Postfix versendet direkt (Port 25, ohne SPF/DKIM) — für die lokale
+  `typebot.local`-Adresse zustellbar, extern oft spam-gefiltert. Für
+  Außenstehende Variante mit eigenem SMTP nutzen.
 - OAuth (GitHub/Google/…) verlangt i. d. R. eine öffentliche Domain mit HTTPS
   (Callback: `$NEXTAUTH_URL/api/auth/callback/<anbieter>`) — über reine LAN-IP
   funktioniert E-Mail-Login am zuverlässigsten.

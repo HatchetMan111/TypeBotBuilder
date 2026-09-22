@@ -61,6 +61,8 @@ GITHUB_ID_ARG="${GITHUB_ID:-}"
 GITHUB_SECRET_ARG="${GITHUB_SECRET:-}"
 GOOGLE_ID_ARG="${GOOGLE_ID:-}"
 GOOGLE_SECRET_ARG="${GOOGLE_SECRET:-}"
+LOGIN_EMAIL_ARG="${LOGIN_EMAIL:-}"            # Default: typebot@typebot.local (Auto-Login)
+NO_AUTO_LOGIN_ARG="${NO_AUTO_LOGIN:-0}"       # 1 = kein automatischer Erstanmelde-Code
 
 DEBUG="${DEBUG:-0}"
 LOG_FILE="/tmp/${APP}-install-$(date +%F-%H%M%S).log"
@@ -113,12 +115,15 @@ Optionen:
   --smtp-pass PASS     SMTP-Passwort (darf Sonderzeichen enthalten; lieber als ENV SMTP_PASS)
   --smtp-from FROM     Absender, z. B. 'Typebot <noreply@domain.tld>'
   --smtp-secure        SMTP mit implizitem TLS (nur für Port 465)
-  --smtp-local         stattdessen lokales Postfix im LXC installieren (keine
-                       Zugangsdaten nötig; Zustellung ab Heimnetz oft spam-/port-gefiltert)
+  --smtp-local         explizites lokales Postfix (ohne Flags ist das bereits
+                       Default, solange kein externes SMTP angegeben ist)
   --github-id ID       GitHub-OAuth Client-ID (+ --github-secret)
   --github-secret S    GitHub-OAuth Secret (lieber als ENV GITHUB_SECRET)
   --google-id ID       Google-OAuth Client-ID (+ --google-secret)
   --google-secret S    Google-OAuth Secret (lieber als ENV GOOGLE_SECRET)
+  --login-email MAIL   Adresse für den automatischen Erstanmelde-Code
+                       (Default: typebot@typebot.local, lokal zugestellt)
+  --no-auto-login      keinen Erstanmelde-Code erzeugen/ausgeben
   --debug, -x          set -x + maximale Fehlermeldungskette
   --help, -h           diese Hilfe
 
@@ -203,6 +208,8 @@ GITHUB_ID="$GITHUB_ID_ARG"
 GITHUB_SECRET="$GITHUB_SECRET_ARG"
 GOOGLE_ID="$GOOGLE_ID_ARG"
 GOOGLE_SECRET="$GOOGLE_SECRET_ARG"
+LOGIN_EMAIL="$LOGIN_EMAIL_ARG"
+NO_AUTO_LOGIN="$NO_AUTO_LOGIN_ARG"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -228,6 +235,8 @@ while [[ $# -gt 0 ]]; do
     --github-secret)   GITHUB_SECRET="${2:?--github-secret braucht einen Wert}"; shift 2 ;;
     --google-id)       GOOGLE_ID="${2:?--google-id braucht einen Wert}"; shift 2 ;;
     --google-secret)   GOOGLE_SECRET="${2:?--google-secret braucht einen Wert}"; shift 2 ;;
+    --login-email)     LOGIN_EMAIL="${2:?--login-email braucht einen Wert}"; shift 2 ;;
+    --no-auto-login)   NO_AUTO_LOGIN="1"; shift ;;
     --debug|-x)        DEBUG="1"; set -x; shift ;;
     --help|-h)         usage; exit 0 ;;
     *) msg_error "Unbekannte Option: $1"; usage; exit 1 ;;
@@ -266,10 +275,10 @@ if [[ -n "$SMTP_SECURE" && "$SMTP_SECURE" != "true" && "$SMTP_SECURE" != "false"
   msg_error "Ungültiges SMTP_SECURE: $SMTP_SECURE (nur true/false)"
   exit 1
 fi
-if [[ -z "$SMTP_HOST" && -z "$GITHUB_ID" && -z "$GOOGLE_ID" && "$SMTP_LOCAL" != "1" ]]; then
-  msg_warn "Kein Auth-Provider mitgegeben – Builder zeigt bis zur Konfiguration:"
+if [[ -z "$SMTP_HOST" && -z "$GITHUB_ID" && -z "$GOOGLE_ID" && "$SMTP_LOCAL" != "1" && "$NO_AUTO_LOGIN" == "1" ]]; then
+  msg_warn "Kein Auth-Provider und kein Auto-Login – Builder zeigt:"
   msg_warn "  'mindestens einen Authentifizierungsanbieter konfigurieren'."
-  msg_warn "  Nachtragen per: bash typebot.sh --ctid <ID> --smtp-host ... (siehe --help)"
+  msg_warn "  Tipp: Flag weglassen (Auto-Login ist Default) oder --smtp-host ... mitgeben (siehe --help)."
 fi
 msg_ok "Host-Checks bestanden."
 
@@ -437,6 +446,8 @@ GITHUB_ID="${GITHUB_ID}"
 GITHUB_SECRET="${GITHUB_SECRET}"
 GOOGLE_ID="${GOOGLE_ID}"
 GOOGLE_SECRET="${GOOGLE_SECRET}"
+LOGIN_EMAIL="${LOGIN_EMAIL}"
+NO_AUTO_LOGIN="${NO_AUTO_LOGIN}"
 
 echo "[LXC] apt update + Basis-Pakete ..."
 export DEBIAN_FRONTEND=noninteractive
@@ -538,23 +549,44 @@ if [[ -z "\${POSTGRES_PASSWORD:-}" ]]; then
   echo "[LXC] Neues POSTGRES_PASSWORD generiert (\${#POSTGRES_PASSWORD} Zeichen)."
 fi
 
-# Optional: lokales Postfix als SMTP-Relay (keine Zugangsdaten noetig).
-# Explizit mitgegebene SMTP_*-Werte gewinnen immer gegen diese Defaults.
-if [[ "\$SMTP_LOCAL" == "1" ]]; then
-  echo "[LXC] Installiere lokales Postfix (SMTP auf 127.0.0.1:25) ..."
+# 127.0.0.1/localhost erreicht der Builder-Container NICHT (eigenes Loopback)
+# -> als "lokal" werten und ueber host.docker.internal + Postfix routen.
+if [[ "\$SMTP_HOST" == "127.0.0.1" || "\$SMTP_HOST" == "localhost" ]]; then SMTP_HOST=""; fi
+
+# Login-Adresse normalisieren (Postfix-Zustellung ist case-sensitiv).
+if [[ -z "\$LOGIN_EMAIL" ]]; then LOGIN_EMAIL="typebot@typebot.local"; LOGIN_EXPLICIT=0; else LOGIN_EXPLICIT=1; fi
+LOGIN_EMAIL="\$(printf '%s' "\$LOGIN_EMAIL" | tr '[:upper:]' '[:lower:]')"
+LOGIN_LOCALPART="\${LOGIN_EMAIL%%@*}"; LOGIN_DOMAIN="\${LOGIN_EMAIL#*@}"
+# Erster Nutzer bekommt den UNLIMITED-Plan (Upstream: ADMIN_EMAIL).
+if [[ -z "\$ADMIN_EMAIL" ]]; then ADMIN_EMAIL="\$LOGIN_EMAIL"; echo "[LXC] ADMIN_EMAIL default: \$ADMIN_EMAIL"; fi
+
+# Lokales Postfix: Default wenn kein externes SMTP konfiguriert ist (dann
+# klappt der Erstanmelde-Code ohne jegliche Zugangsdaten). Explizite SMTP_*-
+# Werte gewinnen immer gegen diese Defaults.
+USE_LOCAL_SMTP=0
+if [[ "\$SMTP_LOCAL" == "1" ]]; then USE_LOCAL_SMTP=1; fi
+if [[ -z "\$SMTP_HOST" && "\$NO_AUTO_LOGIN" != "1" ]]; then USE_LOCAL_SMTP=1; fi
+if [[ "\$USE_LOCAL_SMTP" == "1" ]]; then
+  echo "[LXC] Installiere lokales Postfix (fuer Builder erreichbar als host.docker.internal:25) ..."
   apt-get install -y --no-install-recommends postfix
   echo "typebot.local" > /etc/mailname
+  # inet_interfaces=all: Der Builder laeuft im Docker-Netz (Bridge), loopback-only
+  # wuerde ihn aussperren. Relay bleibt trotzdem lokal (mynetworks unten).
   postconf -e "myhostname = typebot.local" "inet_protocols = ipv4" \
-    "mydestination = \$myhostname, localhost" \
-    "mynetworks = 127.0.0.0/8" "smtp_tls_security_level = may" \
-    "inet_interfaces = loopback-only"
+    "mydestination = \$myhostname, localhost, typebot.local" \
+    "mynetworks = 127.0.0.0/8 172.16.0.0/12" \
+    "inet_interfaces = all"
   systemctl enable postfix
   systemctl restart postfix
-  [[ -z "\$SMTP_HOST" ]] && SMTP_HOST="127.0.0.1"
-  [[ -z "\$SMTP_PORT" ]] && SMTP_PORT="25"
+  SMTP_HOST="host.docker.internal"
+  SMTP_PORT="25"
+  SMTP_IGNORE_TLS="true"
   [[ -z "\$SMTP_FROM" ]] && SMTP_FROM="Typebot <typebot@typebot.local>"
   echo "[LXC] Postfix-Status: \$(systemctl is-active postfix)"
 fi
+# E-Mail-Provider registriert Upstream NUR mit FROM – Default setzen, damit
+# --smtp-host allein bereits genuegt (kein stiller No-Provider).
+if [[ -n "\$SMTP_HOST" && -z "\$SMTP_FROM" ]]; then SMTP_FROM="Typebot <noreply@\$SMTP_HOST>"; fi
 # URLs zeigen IMMER auf die aktuelle Container-IP (DHCP-Wechsel-safe)
 NEXTAUTH_URL="http://\$LXC_IP:\$BUILDER_PORT"
 NEXT_PUBLIC_VIEWER_URL="http://\$LXC_IP:\$VIEWER_PORT"
@@ -578,6 +610,7 @@ maybe_env SMTP_USERNAME "\$SMTP_USER"
 maybe_env SMTP_PASSWORD "\$SMTP_PASS"
 maybe_env NEXT_PUBLIC_SMTP_FROM "\$SMTP_FROM"
 maybe_env SMTP_SECURE "\$SMTP_SECURE"
+maybe_env SMTP_IGNORE_TLS "\$SMTP_IGNORE_TLS"
 maybe_env GITHUB_CLIENT_ID "\$GITHUB_ID"
 maybe_env GITHUB_CLIENT_SECRET "\$GITHUB_SECRET"
 maybe_env GOOGLE_AUTH_CLIENT_ID "\$GOOGLE_ID"
@@ -629,6 +662,9 @@ services:
         condition: service_healthy
     ports:
       - "8080:3000"
+    # Damit der Builder das Host-Postfix (lokaler Pfad) erreicht:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file: .env
     environment:
       REDIS_URL: redis://typebot-redis:6379
@@ -645,6 +681,8 @@ services:
         condition: service_healthy
     ports:
       - "8081:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file: .env
     environment:
       REDIS_URL: redis://typebot-redis:6379
@@ -723,6 +761,82 @@ if ! wait_for_http "Viewer" "http://127.0.0.1:\$VIEWER_PORT/__ENV.js"; then
   docker compose logs --tail=100 --no-color >&2 || true
   exit 1
 fi
+
+# Automatischer Erstanmelde-Code: loest den E-Mail-Login (Auth.js-CSRF-Flow
+# per curl) fuer LOGIN_EMAIL aus. Lokaler Pfad: fischt den 6-stelligen Code
+# aus der lokalen Mailbox und druckt Code + Direkt-Link (10 Min gueltig).
+rm -f /opt/typebot/.auto-login-ok
+trigger_signin() {
+  local mail="\$1" jar csrf code
+  jar="\$(mktemp)"
+  csrf="\$(curl -fsS --max-time 10 -c "\$jar" "http://127.0.0.1:\$BUILDER_PORT/api/auth/csrf" 2>/dev/null | grep -o '"csrfToken":"[^"]*"' | cut -d'"' -f4 || true)"
+  code="000"
+  if [[ -n "\$csrf" ]]; then
+    code="\$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 -b "\$jar" -c "\$jar" --data-urlencode "csrfToken=\$csrf" --data-urlencode "email=\$mail" --data-urlencode "callbackUrl=http://127.0.0.1:\$BUILDER_PORT/typebots" "http://127.0.0.1:\$BUILDER_PORT/api/auth/signin/nodemailer" 2>/dev/null || true)"
+    [[ -z "\$code" ]] && code="000"
+  fi
+  rm -f "\$jar"
+  printf '%s' "\$code"
+}
+if [[ "\$NO_AUTO_LOGIN" == "1" ]]; then
+  echo "[LXC] Auto-Login deaktiviert (--no-auto-login)."
+elif [[ "\$SMTP_HOST" == "host.docker.internal" ]]; then
+  if [[ "\$LOGIN_DOMAIN" != "typebot.local" && "\$LOGIN_DOMAIN" != "localhost" ]]; then
+    echo "[LXC][WARN] Auto-Login uebersprungen: \$LOGIN_EMAIL ist extern, aber nur lokales Postfix konfiguriert (nicht zustellbar)." >&2
+    echo "[LXC][WARN] Entweder --login-email mit @typebot.local nutzen oder externes SMTP angeben." >&2
+  elif [[ ! "\$LOGIN_LOCALPART" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "[LXC][WARN] Auto-Login uebersprungen: ungueltiger Mailbox-Name." >&2
+  else
+    id "\$LOGIN_LOCALPART" >/dev/null 2>&1 || useradd --no-create-home --shell /usr/sbin/nologin "\$LOGIN_LOCALPART"
+    MAILBOX="/var/mail/\$LOGIN_LOCALPART"
+    BEFORE_SIZE=0
+    [[ -f "\$MAILBOX" ]] && BEFORE_SIZE="\$(stat -c%s "\$MAILBOX")"
+    echo "[LXC] Fordere Login-Code fuer \$LOGIN_EMAIL an ..."
+    SIGNIN_HTTP="\$(trigger_signin "\$LOGIN_EMAIL")"
+    if [[ "\$SIGNIN_HTTP" != "302" && "\$SIGNIN_HTTP" != "200" ]]; then
+      echo "[LXC][WARN] Login-Ausloeser fehlgeschlagen (HTTP \$SIGNIN_HTTP) – Anmeldung ggf. manuell im Builder." >&2
+    else
+      CODE=""
+      for i in \$(seq 1 30); do
+        if [[ -f "\$MAILBOX" ]]; then
+          NEWMAIL="\$(tail -c +\$((BEFORE_SIZE+1)) "\$MAILBOX" 2>/dev/null || true)"
+          FLAT="\$(printf '%s' "\$NEWMAIL" | sed -e ':a' -e 'N' -e '\$!ba' -e 's/=\r\{0,1\}\n//g' | sed 's/=3D/=/g')"
+          CODE="\$(printf '%s' "\$FLAT" | grep -o 'signin/email-redirect?token=[0-9]\{6\}' | grep -o '[0-9]\{6\}$' | tail -n1 || true)"
+          [[ -n "\$CODE" ]] && break
+        fi
+        sleep 2
+      done
+      if [[ -z "\$CODE" ]]; then
+        echo "[LXC][WARN] Kein Login-Code in \$MAILBOX gefunden – Anmeldung ggf. manuell im Builder." >&2
+      else
+        LOGIN_URL="http://\$LXC_IP:\$BUILDER_PORT/api/auth/callback/nodemailer?token=\$CODE&email=\${LOGIN_EMAIL/@/%40}&callbackUrl=http://\$LXC_IP:\$BUILDER_PORT/typebots"
+        echo ""
+        echo "[LXC] ═══════ LOGIN (Code 10 Minuten gueltig) ═══════"
+        echo "[LXC] E-Mail : \$LOGIN_EMAIL"
+        echo "[LXC] Code   : \$CODE   (im Builder unter Sign-in eintippen)"
+        echo "[LXC] Direkt : \$LOGIN_URL"
+        echo "[LXC] ═══════════════════════════════════════════════"
+        touch /opt/typebot/.auto-login-ok
+      fi
+    fi
+  fi
+else
+  LOGIN_TARGET=""
+  if [[ "\$LOGIN_EXPLICIT" == "1" ]]; then LOGIN_TARGET="\$LOGIN_EMAIL"
+  elif [[ -n "\$ADMIN_EMAIL" ]]; then LOGIN_TARGET="\$ADMIN_EMAIL"
+  fi
+  if [[ -z "\$LOGIN_TARGET" ]]; then
+    echo "[LXC] Externes SMTP konfiguriert – Anmeldung manuell im Builder (Magic-Code kommt per Mail)."
+  else
+    echo "[LXC] Fordere Login-Code fuer \$LOGIN_TARGET an ..."
+    SIGNIN_HTTP="\$(trigger_signin "\$LOGIN_TARGET")"
+    if [[ "\$SIGNIN_HTTP" != "302" && "\$SIGNIN_HTTP" != "200" ]]; then
+      echo "[LXC][WARN] Login-Ausloeser fehlgeschlagen (HTTP \$SIGNIN_HTTP) – Anmeldung ggf. manuell im Builder." >&2
+    else
+      echo "[LXC] Magic-Code an \$LOGIN_TARGET unterwegs (10 Min gueltig, ggf. Spam-Ordner)."
+    fi
+  fi
+fi
 echo "[LXC] Service aktiv: \$(systemctl is-active typebot)"
 echo "[LXC] Container: \$(docker ps --format '{{.Names}} {{.Status}}' | tr '\\n' '; ')"
 # Typebot verlangt mind. einen Auth-Provider, sonst Hinweis im Builder.
@@ -798,6 +912,11 @@ echo -e "  Builder      : ${C_BOLD}http://<LXC-IP>:${BUILDER_PORT}${C_RESET} (IP
 echo -e "  Viewer       : ${C_BOLD}http://<LXC-IP>:${VIEWER_PORT}${C_RESET}"
 fi
 echo -e "  Auth-Provider: ${AUTH_DESC}"
+if pct exec "$CTID" -- test -f /opt/typebot/.auto-login-ok 2>/dev/null; then
+echo -e "  Login        : Code + Direkt-Link stehen oben ([LXC] LOGIN, 10 Min gültig)"
+else
+echo -e "  Login        : im Builder anmelden (E-Mail-Code per Mail, siehe README Kap. 8)"
+fi
 if [[ "$CREATED_NOW" == "1" && "$GENERATED_PW" == "1" ]]; then
 echo -e "  Root-Passwort: ${C_BOLD}${ROOT_PASSWORD}${C_RESET} (nur jetzt angezeigt – sicher ablegen!)"
 fi
