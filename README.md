@@ -22,6 +22,12 @@ Viewer auf Port **8081**, systemd-Service mit `Restart=always`, Container mit `o
 | CT-ID | immer die **nächste freie ID** (`pvesh get /cluster/nextid`), außer `--ctid` gesetzt |
 | Template | `debian-12-standard` (neuestes auf Storage `local`) |
 | LXC-Features | `nesting=1,keyctl=1` (Docker-Voraussetzung), unprivilegiert |
+| Anmelde-Mail (Default) | `typebot@typebot.local` — existiert nur **im LXC** (`/var/mail/typebot`); den 6-stelligen Code druckt der Installer aus, kein Postfach nötig |
+
+> **Wo bleibt die Bestätigungs-Mail?** Sie verlässt den Server **nie**: Typebot
+> sendet sie an `typebot@typebot.local` ans lokale Postfix, der Installer liest
+> den Code aus und zeigt ihn + Direkt-Link an. Einfach Code im Builder
+> eintippen (10 Min gültig) — fertig. Details + Alternativen: Kap. 8.
 
 ## 1. Installation (Einzeiler, auf dem Proxmox-Host als root)
 
@@ -186,7 +192,8 @@ UNLIMITED-Plan. Erwartete Ausgabe:
 [LXC] Direkt : http://192.168.178.105:8080/api/auth/callback/nodemailer?token=...
 ```
 
-Anpassen / Alternativen (jederzeit idempotent per Re-Run):
+Anpassen / Alternativen (jederzeit idempotent per Re-Run — ein Re-Run gibt
+bei Bedarf auch einen **frischen Login-Code** aus, falls der alte abgelaufen ist):
 
 ```bash
 # Eigene Login-Adresse für den Auto-Code:

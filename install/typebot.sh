@@ -913,7 +913,9 @@ echo -e "  Viewer       : ${C_BOLD}http://<LXC-IP>:${VIEWER_PORT}${C_RESET}"
 fi
 echo -e "  Auth-Provider: ${AUTH_DESC}"
 if pct exec "$CTID" -- test -f /opt/typebot/.auto-login-ok 2>/dev/null; then
-echo -e "  Login        : Code + Direkt-Link stehen oben ([LXC] LOGIN, 10 Min gültig)"
+LOGIN_DISPLAY="$(printf '%s' "${LOGIN_EMAIL:-typebot@typebot.local}" | tr '[:upper:]' '[:lower:]')"
+echo -e "  Login-Mail   : ${C_BOLD}${LOGIN_DISPLAY}${C_RESET} (lokal im LXC, Code gilt 10 Min)"
+echo -e "  Login        : Code + Direkt-Link stehen oben ([LXC] LOGIN)"
 else
 echo -e "  Login        : im Builder anmelden (E-Mail-Code per Mail, siehe README Kap. 8)"
 fi
